@@ -5,7 +5,7 @@ import (
 	"errors"
 	"github.com/nat-n/gomesh/cuboid"
 	"github.com/nat-n/gomesh/mesh"
-	"os"
+	"io"
 	"strconv"
 	"strings"
 )
@@ -37,19 +37,13 @@ type shape_set_temp_schema struct {
 	Meshes []*mesh_temp_schema `json:"meshes"`
 }
 
-func (ss *ShapeSet) Load(ss_path string) (err error) {
-	// Open file
-	file, _ := os.Open(ss_path)
-	if err != nil {
-		err = errors.New("Could not open file: " + ss_path)
-		return
-	}
-
-	// Parse json and load into temporary types
+func Load(ss_reader *io.Reader) (ss *ShapeSet, err error) {
+	ss = &ShapeSet{}
+	// Parse json from reader and load into temporary types
 	temp_data := new(shape_set_temp_schema)
-	err = json.NewDecoder(file).Decode(temp_data)
+	err = json.NewDecoder(*ss_reader).Decode(temp_data)
 	if err != nil {
-		err = errors.New("Could not parse json from: " + ss_path)
+		err = errors.New("Could not parse json from ss_reader")
 		return
 	}
 
@@ -102,10 +96,10 @@ func (ss *ShapeSet) Load(ss_path string) (err error) {
 		ss.Meshes[m.Name] = MeshWrapper{m, b, bb}
 	}
 
-	return nil
+	return
 }
 
-func (ss *ShapeSet) Save(ss_path string) (err error) {
+func (ss *ShapeSet) Save(ss_writer *io.Writer) (err error) {
 	// structure data for serialization
 	temp_data := shape_set_temp_schema{
 		Name:   ss.Name,
@@ -134,13 +128,7 @@ func (ss *ShapeSet) Save(ss_path string) (err error) {
 		temp_data.Meshes = append(temp_data.Meshes, &temp_mesh_data)
 	}
 
-	// Serialized JSON and stream to a file
-	f, err := os.Create(ss_path)
-	if err != nil {
-		err = errors.New("Could not create output file at: " + ss_path)
-		return
-	}
-	err = json.NewEncoder(f).Encode(&temp_data)
+	err = json.NewEncoder(*ss_writer).Encode(&temp_data)
 	if err != nil {
 		err = errors.New("Could not encode json for: " + ss.Name)
 		return
