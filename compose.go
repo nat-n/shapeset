@@ -87,8 +87,10 @@ func (ss *ShapeSet) ComposeRegion(shape_ids ...int) (m mesh.Mesh, err error) {
 				if _, already_indexed := index_map[i]; !already_indexed {
 					index_map[i] = m.Verts.Len()
 					m.Verts.Append(x, y, z)
-					next_normal := mw.Mesh.Norms.Get(i)
-					m.Norms.Append(-next_normal[0], -next_normal[1], -next_normal[2])
+					if mw.Mesh.Norms.Len() > 0 {
+						next_normal := mw.Mesh.Norms.Get(i)[0]
+						m.Norms.Append(-next_normal.X, -next_normal.Y, -next_normal.Z)
+					}
 				}
 			})
 		} else {
@@ -96,7 +98,10 @@ func (ss *ShapeSet) ComposeRegion(shape_ids ...int) (m mesh.Mesh, err error) {
 				if _, already_indexed := index_map[i]; !already_indexed {
 					index_map[i] = m.Verts.Len()
 					m.Verts.Append(x, y, z)
-					m.Norms.Append(mw.Mesh.Norms.Get(i)...)
+					if mw.Mesh.Norms.Len() > 0 {
+						v := mw.Mesh.Norms.Get(i)[0]
+						m.Norms.Append(v.X, v.Y, v.Z)
+					}
 				}
 			})
 		}
