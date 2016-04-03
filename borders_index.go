@@ -1,135 +1,53 @@
 package shapeset
 
 import (
-	"fmt"
 	"github.com/nat-n/geom"
 	"github.com/nat-n/gomesh/cuboid"
-	"github.com/nat-n/gomesh/mesh"
+	gomesh "github.com/nat-n/gomesh/mesh"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 )
 
-// Goal:
-// -----
-// To create populate the Borders of each MeshWapper in the ShapeSet.
-// The Borders map indexes the border vertices of the associated mesh by
-// border identifer such that each indexed vertex in value of Borders, matches
-// the corresponding vertex in other meshes that have the same border.
-// This allows two meshes that share a border to be efficiently joined together
-// along their border, by merging the vertices each of them references of the
-// shared border.
-
-// Strategy:
-// ------------------
-// Make a map with the boundaries for each mesh,
-//   and the bounding boxes for each boundary
-// For each pair of meshes (m1, m2) with intersecting bounding boxes:
-//   For each pair of boundaries (m1.b, m2.b) with intersecting bounding boxes:
-//     "We need to find which vertices from m1.b match which vertices from m2.b"
-//     Created a collection with all vertices from both borders and sort by;
-//       x, y, z values, then which mesh (0 or 1) they came from, so that we
-//       can then iterate over the resulting sorted collection to find pairs of
-//       vertices where the first is from m1, and the second from m2 and their
-//  		 and x,y,z values are identical.
-
-type vertexWrapper struct {
-	Vertex   *geom.Vec3
-	Mesh     int // 0 for mesh1 or 1 for mesh2
-	MeshName string
-	Index    int // index of this vertex in the m1.Verts or m2.Verts
-}
-
 type boundaryDetails struct {
-	Verts       *[]*vertexWrapper
+	Verts       []gomesh.VertexI
 	BoundingBox cuboid.Cuboid
 }
 
 type boundarySet struct {
 	Boundaries []*boundaryDetails
-	MeshName   string
-}
-
-type sortableVertices []*vertexWrapper
-
-func (vs sortableVertices) Len() int      { return len(vs) }
-func (vs sortableVertices) Swap(i, j int) { vs[i], vs[j] = vs[j], vs[i] }
-
-type vertsByPosition struct{ sortableVertices }
-
-func (vs vertsByPosition) Less(i, j int) bool {
-	a := vs.sortableVertices[i]
-	b := vs.sortableVertices[j]
-	if a.Vertex.X > b.Vertex.X {
-		return false
-	} else if a.Vertex.X == b.Vertex.X {
-		if a.Vertex.Y > b.Vertex.Y {
-			return false
-		} else if a.Vertex.Y == b.Vertex.Y {
-			if a.Vertex.Z > b.Vertex.Z {
-				return false
-			} else if a.Vertex.Z == b.Vertex.Z {
-				if a.Mesh > b.Mesh {
-					return false
-				}
-			}
-		}
-	}
-	return true
-}
-
-type vertsByMesh struct{ sortableVertices }
-
-func (vs vertsByMesh) Less(i, j int) bool {
-	return vs.sortableVertices[i].MeshName < vs.sortableVertices[j].MeshName
-}
-
-type newBorderVertex struct {
-	MeshName    string
-	BorderId    string
-	VertexIndex int
+	MeshId     MeshId
 }
 
 func (ss *ShapeSet) IndexBorders() (err error) {
-
 	// Clear existing borders
-	ss.BordersIndex = make(map[string]string)
-	for _, mw := range ss.Meshes {
-		// for some reason simply reassigning mw.Borders doesn't work!
-		for border_id, _ := range mw.Borders {
-			delete(mw.Borders, border_id)
-		}
-	}
-
-	fmt.Println("Identifying border vertices")
-
-	boundaries := make(map[string][]*boundaryDetails)
+	ss.ResetBorders()
 
 	// Compose a map with the boundaries with bounding boxes for each mesh
 	var wg sync.WaitGroup
 	new_boundaries := make(chan *boundarySet, 16)
 	for _, m := range ss.Meshes {
 		wg.Add(1)
-		go func(mesh1 *mesh.Mesh) {
-			m_boundaries := mesh1.IdentifyBoundaries()
+		go func(mesh1 *Mesh) {
+			// Ensure vertices and faces know their places
+			mesh1.ReindexVerticesAndFaces()
+
+			m_boundaries, err := mesh1.IdentifyBoundaries()
+			if err != nil {
+				return
+			}
 			mesh1_boundaries := make([]*boundaryDetails, len(m_boundaries))
 			for i, boundary := range m_boundaries {
-				wrapped_boundary := make([]*vertexWrapper, len(boundary))
+				wrapped_boundary := make([]gomesh.VertexI, len(boundary))
 				for j, bv := range boundary {
-					wrapped_boundary[j] = &vertexWrapper{
-						Vertex:   mesh1.Verts.Get(bv)[0],
-						MeshName: mesh1.Name,
-						Index:    bv,
-					}
+					wrapped_boundary[j] = bv
 				}
 				mesh1_boundaries[i] = &boundaryDetails{
-					&wrapped_boundary,
+					wrapped_boundary,
 					*mesh1.SubsetBoundingBox(boundary),
 				}
 			}
-			new_boundaries <- &boundarySet{mesh1_boundaries, mesh1.Name}
-		}(m.Mesh)
+			new_boundaries <- &boundarySet{mesh1_boundaries, MeshIdFromString(mesh1.Name)}
+		}(m)
 	}
 
 	// Recieve new_boundaries until they're all done
@@ -137,21 +55,19 @@ func (ss *ShapeSet) IndexBorders() (err error) {
 		wg.Wait()
 		close(new_boundaries)
 	}()
+	boundaries := make(map[MeshId][]*boundaryDetails)
 	for new_boundary_set := range new_boundaries {
-		fmt.Print(".")
-		boundaries[new_boundary_set.MeshName] = new_boundary_set.Boundaries
+		boundaries[new_boundary_set.MeshId] = new_boundary_set.Boundaries
 		wg.Done()
 	}
 
-	fmt.Println("Matching up border vertices" + strconv.Itoa(len(boundaries)))
-
 	// The following block compares all borders to build up the vertexOccurances
 	//  map of a location onto a number of vertices from different meshes
-	vertexOccurances := make(map[geom.Vec3][]*vertexWrapper)
-	new_vertex_occurances := make(chan map[geom.Vec3][]*vertexWrapper, 16)
-	for mesh_name1, m1 := range ss.Meshes {
-		for mesh_name2, m2 := range ss.Meshes {
-			if mesh_name1 >= mesh_name2 ||
+	vertexOccurances := make(map[geom.Vec3][]gomesh.VertexI)
+	new_vertex_occurances := make(chan map[geom.Vec3][]gomesh.VertexI, 16)
+	for mesh_id1, m1 := range ss.Meshes {
+		for mesh_id2, m2 := range ss.Meshes {
+			if mesh_id2.LessThan(mesh_id1) ||
 				!m1.BoundingBox.Expanded(0.01).Intersects(
 					m2.BoundingBox.Expanded(0.01)) {
 				// Make sure we only deal with each pair of meshes once,
@@ -159,57 +75,51 @@ func (ss *ShapeSet) IndexBorders() (err error) {
 				continue
 			}
 			wg.Add(1)
-			go func(mesh_name1, mesh_name2 string, boundaries1, boundaries2 []*boundaryDetails) {
-				newVertexOccurances := make(map[geom.Vec3][]*vertexWrapper)
+			go func(mesh_id1, mesh_id2 MeshId, boundaries1, boundaries2 []*boundaryDetails) {
+				newVertexOccurances := make(map[geom.Vec3][]gomesh.VertexI)
 				for _, boundary1 := range boundaries1 {
 					for _, boundary2 := range boundaries2 {
 						if !boundary1.BoundingBox.Expanded(0.01).Intersects(
 							boundary2.BoundingBox.Expanded(0.01)) {
 							continue
 						}
-						// Now we need to identify any matching vertices between boundary1
-						// and boundary2.
-						// This is done using a sort wrapper to order the verts so that
-						// potentially colocated vertices occur consequtively
-						verts := make([]*vertexWrapper, 0)
+						// Identify any matching vertices between boundary1 and boundary2
+						// by using a sort wrapper to order the verts so that potentially
+						// colocated vertices occur consequtively.
+						verts := make([]gomesh.VertexI, 0)
 
 						// Loop over the vertices in both borders to fill in verts
-						for _, wrapped_vert := range *boundary1.Verts {
-							verts = append(verts, &vertexWrapper{
-								Vertex:   wrapped_vert.Vertex,
-								Mesh:     0,
-								MeshName: mesh_name1,
-								Index:    wrapped_vert.Index,
-							})
+						for _, vert := range boundary1.Verts {
+							verts = append(verts, vert)
 						}
-						for _, wrapped_vert := range *boundary2.Verts {
-							verts = append(verts, &vertexWrapper{
-								Vertex:   wrapped_vert.Vertex,
-								Mesh:     1,
-								MeshName: mesh_name2,
-								Index:    wrapped_vert.Index,
-							})
+						for _, vert := range boundary2.Verts {
+							verts = append(verts, vert)
 						}
 
 						// Sort verts so that any border vertex from m2 that is potentially
 						// collocated with a border vertex from m1 follows it directly in
 						// the array.
-						sort.Sort(vertsByPosition{verts})
+						sort.Sort(gomesh.VerticesByPosition{verts})
 
 						// iterate over the sorted verts and identify pairs of verts from
 						// different meshes at the same location
 						prev_vert := verts[0]
 						for _, vert := range verts[1:] {
-							if prev_vert.Mesh != vert.Mesh &&
-								prev_vert.Vertex.X == vert.Vertex.X &&
-								prev_vert.Vertex.Y == vert.Vertex.Y &&
-								prev_vert.Vertex.Z == vert.Vertex.Z {
+							// This assumes that these vertices both appear in only one mesh already!!
+							// ... which will be true in the main use case.
+							cm, _ := vert.GetMeshLocation()
+							pm, _ := prev_vert.GetMeshLocation()
+							if pm != cm &&
+								prev_vert.GetX() == vert.GetX() &&
+								prev_vert.GetY() == vert.GetY() &&
+								prev_vert.GetZ() == vert.GetZ() {
 								// Found a matching vertex `vert`, which is shared between
 								//  boundary1 and boundary2.
 								// Record the mesh and index of both occurances of a vertex at
 								//  this location.
-								newVertexOccurances[*vert.Vertex] = append(
-									newVertexOccurances[*vert.Vertex],
+								vec := geom.Vec3{vert.GetX(), vert.GetY(), vert.GetZ()}
+								newVertexOccurances[vec] = append(
+									newVertexOccurances[vec],
 									prev_vert,
 									vert,
 								)
@@ -223,7 +133,7 @@ func (ss *ShapeSet) IndexBorders() (err error) {
 				// into the VertexOccurances map.
 				new_vertex_occurances <- newVertexOccurances
 
-			}(mesh_name1, mesh_name2, boundaries[mesh_name1], boundaries[mesh_name2])
+			}(mesh_id1, mesh_id2, boundaries[mesh_id1], boundaries[mesh_id2])
 		}
 	}
 
@@ -234,34 +144,31 @@ func (ss *ShapeSet) IndexBorders() (err error) {
 	}()
 	for recieved_vertex_occurances := range new_vertex_occurances {
 		// this channel recieves once for each overlapping pair of boundaries
-		for vertex, occurances := range recieved_vertex_occurances {
-			vertexOccurances[vertex] = append(
-				vertexOccurances[vertex],
-				occurances...,
-			)
+		for vec, occurances := range recieved_vertex_occurances {
+			vertexOccurances[vec] = append(vertexOccurances[vec], occurances...)
 		}
 		wg.Done()
 	}
 
-	fmt.Println("Building BordersIndex with " + strconv.Itoa(len(vertexOccurances)))
-
 	// Finally, unpack vertexOccurances to populate ss.BordersIndex and the
 	//  Borders object of each MeshWrapper.
-	new_mesh_border_vertices := make(chan map[string]map[string][]int, 16)
+	new_mesh_border_verts := make(chan map[MeshId]map[BorderDescription][]gomesh.VertexI, 16)
 	for _, occurances := range vertexOccurances {
 		wg.Add(1)
-		go func(occurances []*vertexWrapper) {
-			border_participants := make([]string, 0)
-			mesh_border_vertices := make(map[string]map[string][]int)
+		go func(occurances []gomesh.VertexI) {
+			border_participants := make([]MeshId, 0)
+			mesh_border_verts := make(map[MeshId]map[BorderDescription][]gomesh.VertexI)
 
 			// uniqueify occurances of this vertex by mesh
-			sort.Sort(vertsByMesh{occurances})
-			unique_occurances := make([]*vertexWrapper, 0, len(occurances))
+			sort.Sort(gomesh.VerticesByMesh{occurances})
+			unique_occurances := make([]gomesh.VertexI, 0, len(occurances))
 			var found bool
 			for _, occurance := range occurances {
 				found = false
 				for _, uo := range unique_occurances {
-					if occurance.MeshName == uo.MeshName {
+					uo_m, _ := uo.GetMeshLocation()
+					occurance_m, _ := occurance.GetMeshLocation()
+					if occurance_m == uo_m {
 						found = true
 						break
 					}
@@ -273,83 +180,107 @@ func (ss *ShapeSet) IndexBorders() (err error) {
 
 			// Derive the canonical description for the border this vertex belongs to
 			for _, occurance := range unique_occurances {
-				border_participants = append(border_participants, occurance.MeshName)
+				occurance_m, _ := occurance.GetMeshLocation()
+				border_participants = append(border_participants,
+					MeshIdFromString(occurance_m.GetName()))
 			}
-			sort.Strings(border_participants)
-			border_desc := strings.Join(border_participants, "_")
+			sort.Sort(ByMeshIdPrecedence(border_participants))
+			border_desc := BorderDescriptionFromMeshIds(border_participants)
 
 			// Register this vertex as being the next item in the determined border
 			//  for each of the participating meshes.
-			for _, occurance := range unique_occurances {
-				if _, exists := mesh_border_vertices[occurance.MeshName]; !exists {
-					mesh_border_vertices[occurance.MeshName] = make(map[string][]int)
+			for _, vert := range unique_occurances {
+				occurance_m, _ := vert.GetMeshLocation()
+				occurance_mid := MeshIdFromString(occurance_m.GetName())
+				if _, exists := mesh_border_verts[occurance_mid]; !exists {
+					mesh_border_verts[occurance_mid] = make(map[BorderDescription][]gomesh.VertexI)
 				}
-				mesh_border_vertices[occurance.MeshName][border_desc] = append(
-					mesh_border_vertices[occurance.MeshName][border_desc],
-					occurance.Index,
+				mesh_border_verts[occurance_mid][border_desc] = append(
+					mesh_border_verts[occurance_mid][border_desc],
+					vert,
 				)
 			}
 
-			new_mesh_border_vertices <- mesh_border_vertices
+			new_mesh_border_verts <- mesh_border_verts
 		}(occurances)
 	}
 
-	// Recieve new_mesh_border_vertices until they're all done
+	// Recieve new_mesh_border_verts until they're all done
 	go func() {
 		wg.Wait()
-		close(new_mesh_border_vertices)
+		close(new_mesh_border_verts)
 	}()
 
-	// Build ss.BordersIndex as a map of border descriptions onto temporary
-	// border_ids. Use temporary border ids initially determined by the order
-	// that the new_mesh_border_vertices channel yeilds data containing each
-	// border description.
+	// A slice of all border descriptions as strings for the sake of sorting
+	border_desc_strings := make([]string, 0)
+	encountered_border_descs := make(map[BorderDescription]map[MeshId][]gomesh.VertexI)
 
-	// A slice of all border descriptions
-	all_border_descs := make([]string, 0)
-
-	for recieved_mesh_border_vertices := range new_mesh_border_vertices {
-		for mesh_name, borders := range recieved_mesh_border_vertices {
-			for border_desc, indices := range borders {
+	for recieved_mesh_border_verts := range new_mesh_border_verts {
+		for mesh_id, border_verts := range recieved_mesh_border_verts {
+			for border_desc, verts := range border_verts {
 				// Lookup/Create am int-string border id for a border of this description
-				_, border_seen := ss.BordersIndex[border_desc]
+				_, border_seen := encountered_border_descs[border_desc]
 				if !border_seen {
-					// 	temp_border_id = strconv.Itoa(len(ss.BordersIndex))
-					// ss.BordersIndex[border_desc] = temp_border_id
-					ss.BordersIndex[border_desc] = border_desc
-					all_border_descs = append(all_border_descs, border_desc)
+					border_desc_strings = append(border_desc_strings, border_desc.ToString())
+					encountered_border_descs[border_desc] = make(map[MeshId][]gomesh.VertexI)
 				}
-				ss.Meshes[mesh_name].Borders[border_desc] = append(
-					ss.Meshes[mesh_name].Borders[border_desc],
-					indices...,
+				encountered_border_descs[border_desc][mesh_id] = append(
+					encountered_border_descs[border_desc][mesh_id],
+					verts...,
 				)
 			}
 		}
 		wg.Done()
 	}
 
-	fmt.Println("Assigning border ids for " + strconv.Itoa(len(all_border_descs)))
-
-	// Assign deterministic ids for each border, as the index of the border
-	// description in the sorted array of all border descriptions.
-	// Update all border id references in ss.BordersIndex and
-	// ss.Meshes[mesh_name].Borders.
-	// We do this in order to make the result output more idempotent.
-	sort.Strings(all_border_descs)
-
-	for i, border_desc := range all_border_descs {
-		border_id := strconv.Itoa(i)
-		ss.BordersIndex[border_desc] = border_id
+	// Create borders in string sorted order
+	sort.Strings(border_desc_strings)
+	for _, border_desc_str := range border_desc_strings {
+		ss.BordersIndex.NewBorder(BorderDescriptionFromString(border_desc_str))
 	}
 
-	for _, mw := range ss.Meshes {
-		for _, border_desc := range all_border_descs {
-			if _, exists := mw.Borders[border_desc]; exists {
-				mw.Borders[ss.BordersIndex[border_desc]] = mw.Borders[border_desc]
-				delete(mw.Borders, border_desc)
+	for border_desc, bmap := range encountered_border_descs {
+		border := ss.BordersIndex.BorderFor(border_desc)
+
+		// single out border vertices of first mesh to be the border vertices
+		var first_mesh_verts []gomesh.VertexI
+		for first_mesh_id, border_verts := range bmap {
+			first_mesh_verts = border_verts
+			delete(bmap, first_mesh_id)
+			break
+		}
+		for _, v1I := range first_mesh_verts {
+			v1 := v1I.(*Vertex)
+			v1.Border = border
+			border.Vertices = append(border.Vertices, v1)
+		}
+
+		// merge border vertices from other meshes into those of the first mesh
+		for _, border_verts := range bmap {
+			for vi, v1I := range first_mesh_verts {
+				v2I := border_verts[vi]
+				v1 := v1I.(*Vertex)
+				v2 := v2I.(*Vertex)
+				// move v2.Faces over to v1.Faces
+				err := gomesh.MergeSharedVertices(v1I, v2I)
+				if err != nil {
+					panic(err)
+				}
+				// move v2.Edges over to v1.Edges
+				for _, e := range v2.Edges {
+					e.ReplaceVertex(v2, v1)
+					v1.AddEdge(e)
+				}
+				v2.Edges = v2.Edges[:0]
+				v2_mesh, v2_i := v2.GetMeshLocation()
+				v2_mesh.GetVertices().Update(v2_i, v1I)
+				v1.SetLocationInMesh(&v2_mesh, v2_i)
 			}
 		}
 	}
+
+	// Now that border vertices are registered, infer border edges
+	ss.BordersIndex.indexBorderEdges()
 
 	return
 }

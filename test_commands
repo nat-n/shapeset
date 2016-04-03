@@ -1,0 +1,96 @@
+go run github.com/nat-n/shapeset/sstool/sstool.go \
+    -im /Users/nat/Projects/rumesh_reboot/blahb01/meshes/4_decimated_obj \
+    -l /Users/nat/Projects/rumesh_reboot/blahb01/labels.json \
+    -index_borders \
+    -decimate_edges \
+    -om /Users/nat/Projects/rumesh_reboot/blahb01/meshes/5_final_obj \
+    -o /Users/nat/Projects/rumesh_reboot/blahb01/shape_set.json_fin
+
+
+
+GOMAXPROCS=8 time go run cli/cli.go \
+  create /Users/nat/Projects/rumesh_reboot/blahb01/meshes/4_decimated_obj /Users/nat/Projects/rumesh_reboot/blahb01/labels.json \
+  index-borders \
+  simplify-borders \
+  index-borders \
+  save-meshes /Users/nat/Projects/rumesh_reboot/blahb01/meshes/5_final_obj \
+  save /Users/nat/Projects/rumesh_reboot/blahb01/shape_set.json_fin
+
+
+GOMAXPROCS=7 time go run cli/cli.go -v \
+  create /Users/nat/Projects/rumesh_reboot/blahb01/meshes/4_decimated_obj /Users/nat/Projects/rumesh_reboot/blahb01/labels.json \
+  index-borders \
+  verify-borders \
+  simplify-borders \
+  index-borders \
+  verify-borders \
+  save-meshes /Users/nat/Projects/rumesh_reboot/blahb01/meshes/5_final_obj \
+  save /Users/nat/Projects/rumesh_reboot/blahb01/shape_set.json_fin \
+  create-region 5 ~/Desktop/region1.obj \
+  create-region 15,16 ~/Desktop/region2.obj \
+  create-region 25,24,23,22,21 ~/Desktop/region3.obj
+
+
+
+
+GOMAXPROCS=7 time go run ~/go/src/cli/cli.go -v \
+  create /Users/nat/Projects/rumesh_reboot/blahb01/meshes/4_decimated_obj /Users/nat/Projects/rumesh_reboot/blahb01/labels.json \
+  index-borders \
+  verify-borders \
+  save-meshes /Users/nat/Projects/rumesh_reboot/blahb01/meshes/5_final_obj \
+  create-region 5 ~/Desktop/region1.obj \
+  create-region 15,16 ~/Desktop/region2.obj \
+  create-region 25,24,23,22,21 ~/Desktop/region3.obj
+
+
+GOMAXPROCS=7 time godebug run ~/go/src/cli/cli.go -v \
+  create /Users/nat/Projects/rumesh_reboot/blahb01/meshes/4_decimated_obj /Users/nat/Projects/rumesh_reboot/blahb01/labels.json \
+  index-borders \
+  simplify-borders \
+  index-borders \
+  verify-borders \
+  save-meshes /Users/nat/Projects/rumesh_reboot/blahb01/meshes/5_final_obj \
+  create-region 5 ~/Desktop/region1.obj \
+  create-region 15,16 ~/Desktop/region2.obj \
+  create-region 25,24,23,22,21 ~/Desktop/region3.obj
+
+
+
+GOMAXPROCS=7 time godebug run ~/go/src/cli/cli.go -v   create /Users/nat/Projects/rumesh_reboot/oct2abr/meshes/4_decimated_obj /Users/nat/Projects/rumesh_reboot/oct2abr/labels.json   index-borders   simplify-borders   index-borders   verify-borders   save-meshes /Users/nat/Projects/rumesh_reboot/oct2abr/meshes/5_final_obj   create-region 5 ~/Desktop/region1.obj   create-region 15,16 ~/Desktop/region2.obj   create-region 25,24,23,22,21 ~/Desktop/region3.obj
+
+
+
+
+
+---
+
+0th test:
+GOMAXPROCS=7 time go run ~/go/src/cli/cli.go -v create \
+/Users/nat/Projects/rumesh_reboot/oct2abr/meshes/4_decimated_obj \
+/Users/nat/Projects/rumesh_reboot/oct2abr/labels.json \
+index-borders \
+save /Users/nat/Projects/rumesh_reboot/blahb01/shape_set.json_out
+
+
+first test:
+
+GOMAXPROCS=7 time go run ~/go/src/cli/cli.go -v create \
+/Users/nat/Projects/rumesh_reboot/oct2abr/meshes/4_decimated_obj \
+/Users/nat/Projects/rumesh_reboot/oct2abr/labels.json \
+index-borders \
+save-meshes /Users/nat/Projects/rumesh_reboot/oct2abr/meshes/5_final_obj \
+create-region 6 ~/Desktop/region1.obj \
+create-region 1,2 ~/Desktop/region2.obj \
+create-region 2,3,6,4 ~/Desktop/region3.obj \
+save /Users/nat/Projects/rumesh_reboot/blahb01/shape_set.json_out
+
+second test (x2):
+
+GOMAXPROCS=7 time go run ~/go/src/cli/cli.go -v \
+load /Users/nat/Projects/rumesh_reboot/blahb01/shape_set.json_out \
+index-borders \
+save-meshes \
+/Users/nat/Projects/rumesh_reboot/oct2abr/meshes/5_final_objcreate-region 6 ~/Desktop/region4.obj \
+create-region 1,2 ~/Desktop/region5.obj \
+create-region 2,3,6,4 ~/Desktop/region6.obj \
+save /Users/nat/Projects/rumesh_reboot/blahb01/shape_set.json_out \
